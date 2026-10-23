@@ -16,6 +16,7 @@ import android.graphics.Paint;
 import android.graphics.RadialGradient;
 import android.graphics.Shader;
 import android.graphics.Typeface;
+import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -25,7 +26,6 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
@@ -37,7 +37,6 @@ import android.widget.TextView;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Calendar;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -47,13 +46,12 @@ import java.util.Set;
 
 public class MainActivity extends Activity {
 
-    // Shown first, in this order. Any other TV app you install later appears after them.
+    // Shown first, in this order. Any other TV app installed later appears after them.
     private static final List<String> FAVORITES = Arrays.asList(
             "com.google.android.youtube.tv",
             "com.stremio.one",
             "com.android.vending");
 
-    // Never shown as a card (settings has its own gear button).
     private static final Set<String> HIDDEN = new HashSet<>(Arrays.asList(
             "sk.peto.cinema",
             "com.android.tv.settings",
@@ -69,29 +67,28 @@ public class MainActivity extends Activity {
         TAGLINES.put("com.android.vending", "Get more apps");
     }
 
-    private static final int BG = 0xFF07070A;
-    private static final int CARD_BG = 0xFF17171C;
-    private static final int ANIM_MS = 160;
+    private static final int BG = 0xFF0B0B0D;
+    private static final int TILE_BG = 0xFF1C1C21;
+    private static final int ANIM_MS = 120;
 
     private GlowView glow;
-    private TextView greeting, heroTitle, heroSub;
-    private ImageView heroIcon;
+    private ImageView backdrop;
+    private TextView heroTitle, heroSub, heroChip;
     private LinearLayout row;
-    private HorizontalScrollView rowScroll;
     private View gear;
 
     private String focusedPkg;
-    private int accent = 0xFF7A1420;
+    private int accent = 0xFF5A0F18;
     private ValueAnimator accentAnim;
     private final Map<String, Integer> accentCache = new HashMap<>();
-    private final List<AppEntry> apps = new ArrayList<>();
+    private final Map<String, Drawable> backdropCache = new HashMap<>();
     private String appsSignature = "";
 
     static final class AppEntry {
         String pkg; CharSequence label; Drawable icon; Drawable banner; Intent launch;
     }
 
-    // ---------------------------------------------------------------- lifecycle
+    // ------------------------------------------------------------ lifecycle
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -105,14 +102,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        greeting.setText(greetingText());
         reloadApps();
     }
 
     @Override
-    public void onBackPressed() {
-        // Home screen: Back does nothing.
-    }
+    public void onBackPressed() { /* home screen */ }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
@@ -120,101 +114,109 @@ public class MainActivity extends Activity {
         return super.onKeyDown(keyCode, event);
     }
 
-    // ---------------------------------------------------------------- UI
+    // ------------------------------------------------------------ layout
 
     private View buildUi() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(BG);
 
+        // 1. coloured ambient glow
         glow = new GlowView(this);
         glow.setAccent(accent);
         root.addView(glow, new FrameLayout.LayoutParams(-1, -1));
 
+        // 2. billboard backdrop: the focused app's art, soft and large, on the right
+        backdrop = new ImageView(this);
+        backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        backdrop.setAlpha(0f);
+        backdrop.setColorFilter(0xFF8C8C8C, android.graphics.PorterDuff.Mode.MULTIPLY);
+        FrameLayout.LayoutParams bp = new FrameLayout.LayoutParams(-1, -1);
+        bp.leftMargin = dp(300);
+        bp.bottomMargin = dp(150);
+        root.addView(backdrop, bp);
+
+        // 3. shade: dark from the left and from the bottom so text and tiles stay readable
+        root.addView(new ShadeView(this), new FrameLayout.LayoutParams(-1, -1));
+
+        // 4. content
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(64), dp(36), dp(64), dp(28));
+        content.setPadding(dp(56), dp(28), dp(56), dp(26));
         content.setClipChildren(false);
         content.setClipToPadding(false);
         root.addView(content, new FrameLayout.LayoutParams(-1, -1));
 
-        // Top bar: greeting ............ gear  clock
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        greeting = text(18, 0xB3FFFFFF, false);
-        top.addView(greeting, new LinearLayout.LayoutParams(0, -2, 1f));
-
+        top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
         gear = buildGear();
-        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(dp(44), dp(44));
-        gp.rightMargin = dp(22);
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(dp(34), dp(34));
+        gp.rightMargin = dp(16);
         top.addView(gear, gp);
-
         TextClock clock = new TextClock(this);
         clock.setFormat24Hour("HH:mm");
         clock.setFormat12Hour("h:mm");
-        clock.setTextColor(Color.WHITE);
-        clock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
-        clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+        clock.setTextColor(0xE6FFFFFF);
+        clock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        clock.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
         top.addView(clock);
         content.addView(top);
 
         content.addView(new View(this), new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        // Hero: the focused app, big
-        heroIcon = new ImageView(this);
-        heroIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(64), dp(64));
-        ip.bottomMargin = dp(14);
-        content.addView(heroIcon, ip);
-
-        heroTitle = text(56, Color.WHITE, true);
+        heroTitle = text(40, Color.WHITE);
         heroTitle.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
-        heroTitle.setLetterSpacing(-0.02f);
+        heroTitle.setLetterSpacing(-0.01f);
         heroTitle.setSingleLine(true);
         heroTitle.setEllipsize(TextUtils.TruncateAt.END);
-        content.addView(heroTitle);
+        content.addView(heroTitle, new LinearLayout.LayoutParams(dp(560), -2));
 
-        heroSub = text(20, 0xCCFFFFFF, false);
+        heroSub = text(15, 0xB3FFFFFF);
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-2, -2);
-        sp.topMargin = dp(6);
+        sp.topMargin = dp(8);
         content.addView(heroSub, sp);
 
-        TextView hint = text(14, 0x80FFFFFF, false);
-        hint.setText("Press OK to open");
-        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(-2, -2);
-        hp.topMargin = dp(14);
-        content.addView(hint, hp);
+        heroChip = text(13, 0xFF000000);
+        heroChip.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heroChip.setText("▶  Open");
+        heroChip.setPadding(dp(14), dp(7), dp(16), dp(7));
+        GradientDrawable chipBg = new GradientDrawable();
+        chipBg.setCornerRadius(dp(4));
+        chipBg.setColor(Color.WHITE);
+        heroChip.setBackground(chipBg);
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-2, -2);
+        cp.topMargin = dp(16);
+        content.addView(heroChip, cp);
 
-        content.addView(new View(this), new LinearLayout.LayoutParams(-1, dp(36)));
+        content.addView(new View(this), new LinearLayout.LayoutParams(-1, dp(30)));
 
-        // Row title + row of cards
-        TextView rowTitle = text(17, 0xE6FFFFFF, true);
+        TextView rowTitle = text(14, 0xD9FFFFFF);
+        rowTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         rowTitle.setText("My apps");
         content.addView(rowTitle);
 
-        rowScroll = new HorizontalScrollView(this);
-        rowScroll.setHorizontalScrollBarEnabled(false);
-        rowScroll.setClipChildren(false);
-        rowScroll.setClipToPadding(false);
-        rowScroll.setFillViewport(false);
-        rowScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        scroll.setClipChildren(false);
+        scroll.setClipToPadding(false);
+        scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
         row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setClipChildren(false);
         row.setClipToPadding(false);
-        row.setPadding(dp(4), dp(22), dp(40), dp(22));
-        rowScroll.addView(row);
-
+        row.setPadding(dp(2), dp(12), dp(40), dp(12));
+        scroll.addView(row);
         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, -2);
-        rp.leftMargin = -dp(4);
-        content.addView(rowScroll, rp);
+        rp.leftMargin = -dp(2);
+        content.addView(scroll, rp);
 
         return root;
     }
 
     private View buildGear() {
         FrameLayout f = new FrameLayout(this);
+        f.setId(View.generateViewId());
         f.setFocusable(true);
         f.setClickable(true);
         GradientDrawable bg = new GradientDrawable();
@@ -223,19 +225,18 @@ public class MainActivity extends Activity {
         f.setBackground(bg);
         ImageView g = new ImageView(this);
         g.setImageResource(R.drawable.ic_gear);
-        g.setColorFilter(0xCCFFFFFF);
-        f.addView(g, new FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER));
+        g.setColorFilter(0xB3FFFFFF);
+        f.addView(g, new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
         f.setOnFocusChangeListener((v, has) -> {
             bg.setColor(has ? 0xFFFFFFFF : 0x00FFFFFF);
-            g.setColorFilter(has ? 0xFF000000 : 0xCCFFFFFF);
-            v.animate().scaleX(has ? 1.1f : 1f).scaleY(has ? 1.1f : 1f).setDuration(ANIM_MS).start();
+            g.setColorFilter(has ? 0xFF000000 : 0xB3FFFFFF);
             if (has) setHero(null);
         });
         f.setOnClickListener(v -> openSettings());
         return f;
     }
 
-    // ---------------------------------------------------------------- apps
+    // ------------------------------------------------------------ apps
 
     private void reloadApps() {
         PackageManager pm = getPackageManager();
@@ -256,14 +257,13 @@ public class MainActivity extends Activity {
         order.addAll(rest);
 
         String sig = TextUtils.join(",", order);
-        if (sig.equals(appsSignature) && row.getChildCount() > 0) {
-            restoreFocus();
-            return;
-        }
+        if (sig.equals(appsSignature) && row.getChildCount() > 0) { restoreFocus(); return; }
         appsSignature = sig;
+        backdropCache.clear();
 
-        apps.clear();
-        for (String p : order) {
+        row.removeAllViews();
+        for (int i = 0; i < order.size(); i++) {
+            String p = order.get(i);
             ResolveInfo ri = byPkg.get(p);
             AppEntry e = new AppEntry();
             e.pkg = p;
@@ -273,14 +273,9 @@ public class MainActivity extends Activity {
             if (e.banner == null) e.banner = ri.activityInfo.applicationInfo.loadBanner(pm);
             e.launch = pm.getLeanbackLaunchIntentForPackage(p);
             if (e.launch == null) e.launch = pm.getLaunchIntentForPackage(p);
-            apps.add(e);
+            row.addView(buildTile(e, i));
         }
-
-        row.removeAllViews();
-        for (int i = 0; i < apps.size(); i++) row.addView(buildCard(apps.get(i), i));
-        if (row.getChildCount() > 0) {
-            gear.setNextFocusDownId(row.getChildAt(0).getId());
-        }
+        if (row.getChildCount() > 0) gear.setNextFocusDownId(row.getChildAt(0).getId());
         restoreFocus();
     }
 
@@ -291,157 +286,159 @@ public class MainActivity extends Activity {
             if (focusedPkg != null && focusedPkg.equals(c.getTag())) { target = c; break; }
         }
         if (target == null && row.getChildCount() > 0) target = row.getChildAt(0);
-        if (target != null) {
-            final View t = target;
-            t.post(t::requestFocus);
-        } else {
-            setHero(null);
-            gear.requestFocus();
-        }
+        if (target != null) { final View t = target; t.post(t::requestFocus); }
+        else { setHero(null); gear.requestFocus(); }
     }
 
-    private View buildCard(AppEntry e, int index) {
-        int w = dp(288), h = dp(162), r = dp(14);
+    private View buildTile(AppEntry e, int index) {
+        int w = dp(200), h = dp(112), r = dp(6);
 
-        FrameLayout card = new FrameLayout(this);
-        card.setId(View.generateViewId());
-        card.setTag(e.pkg);
-        card.setFocusable(true);
-        card.setClickable(true);
+        FrameLayout tile = new FrameLayout(this);
+        tile.setId(View.generateViewId());
+        tile.setTag(e.pkg);
+        tile.setFocusable(true);
+        tile.setClickable(true);
 
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(r);
-        bg.setColor(CARD_BG);
-        card.setBackground(bg);
-        card.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
-        card.setClipToOutline(true);
-        card.setElevation(dp(2));
+        bg.setColor(TILE_BG);
+        tile.setBackground(bg);
+        tile.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
+        tile.setClipToOutline(true);
 
         if (e.banner != null) {
             ImageView b = new ImageView(this);
             b.setImageDrawable(e.banner);
             b.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            card.addView(b, new FrameLayout.LayoutParams(-1, -1));
+            tile.addView(b, new FrameLayout.LayoutParams(-1, -1));
         } else {
             int a = accentFor(e);
-            bg.setColors(new int[]{darken(a, 0.55f), darken(a, 0.25f)});
+            bg.setColors(new int[]{darken(a, 0.45f), darken(a, 0.2f)});
             bg.setOrientation(GradientDrawable.Orientation.TL_BR);
             ImageView ic = new ImageView(this);
             ic.setImageDrawable(e.icon);
-            card.addView(ic, new FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER));
-            TextView l = text(15, Color.WHITE, true);
+            FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER);
+            ip.bottomMargin = dp(12);
+            tile.addView(ic, ip);
+            TextView l = text(12, 0xE6FFFFFF);
             l.setText(e.label);
             l.setSingleLine(true);
             l.setEllipsize(TextUtils.TruncateAt.END);
             l.setGravity(Gravity.CENTER);
             FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
-            lp.bottomMargin = dp(12);
-            lp.leftMargin = lp.rightMargin = dp(12);
-            card.addView(l, lp);
+            lp.bottomMargin = dp(9);
+            lp.leftMargin = lp.rightMargin = dp(8);
+            tile.addView(l, lp);
         }
 
-        // Focus ring
         View ring = new View(this);
         GradientDrawable rd = new GradientDrawable();
         rd.setCornerRadius(r);
         rd.setColor(Color.TRANSPARENT);
-        rd.setStroke(dp(3), Color.WHITE);
+        rd.setStroke(dp(2), Color.WHITE);
         ring.setBackground(rd);
         ring.setAlpha(0f);
-        card.addView(ring, new FrameLayout.LayoutParams(-1, -1));
+        tile.addView(ring, new FrameLayout.LayoutParams(-1, -1));
 
-        card.setAlpha(0.72f);
-        card.setOnFocusChangeListener((v, has) -> {
-            float s = has ? 1.10f : 1f;
-            v.animate().scaleX(s).scaleY(s).alpha(has ? 1f : 0.72f)
-                    .translationZ(has ? dp(14) : 0)
+        tile.setAlpha(0.8f);
+        tile.setOnFocusChangeListener((v, has) -> {
+            float s = has ? 1.08f : 1f;
+            v.animate().scaleX(s).scaleY(s).alpha(has ? 1f : 0.8f)
                     .setInterpolator(new DecelerateInterpolator()).setDuration(ANIM_MS).start();
             ring.animate().alpha(has ? 1f : 0f).setDuration(ANIM_MS).start();
-            if (has) {
-                focusedPkg = e.pkg;
-                setHero(e);
-            }
+            if (has) { focusedPkg = e.pkg; setHero(e); }
         });
-        card.setOnClickListener(v -> launch(e));
-        card.setNextFocusUpId(gear.getId() == View.NO_ID ? assignId(gear) : gear.getId());
+        tile.setOnClickListener(v -> launch(e));
+        tile.setNextFocusUpId(gear.getId());
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(w, h);
-        if (index > 0) lp.leftMargin = dp(26);
-        card.setLayoutParams(lp);
-        return card;
-    }
-
-    private int assignId(View v) {
-        int id = View.generateViewId();
-        v.setId(id);
-        return id;
+        if (index > 0) lp.leftMargin = dp(12);
+        tile.setLayoutParams(lp);
+        return tile;
     }
 
     private void launch(AppEntry e) {
         if (e.launch == null) return;
-        Intent i = new Intent(e.launch).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        try { startActivity(i); } catch (ActivityNotFoundException ignored) { }
+        try { startActivity(new Intent(e.launch).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); }
+        catch (ActivityNotFoundException ignored) { }
     }
 
     private void openSettings() {
-        try {
-            startActivity(new Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        } catch (ActivityNotFoundException ignored) { }
+        try { startActivity(new Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); }
+        catch (ActivityNotFoundException ignored) { }
     }
 
-    // ---------------------------------------------------------------- hero + colour
+    // ------------------------------------------------------------ billboard
 
     private void setHero(AppEntry e) {
         final CharSequence title = e == null ? "Settings" : e.label;
         final CharSequence sub = e == null ? "Wi-Fi, picture, sound and more"
-                : (TAGLINES.containsKey(e.pkg) ? TAGLINES.get(e.pkg) : "Open app");
-        final Drawable icon = e == null ? null : e.icon;
-        final int target = e == null ? 0xFF3A4458 : accentFor(e);
+                : (TAGLINES.containsKey(e.pkg) ? TAGLINES.get(e.pkg) : "");
+        final Drawable art = e == null ? null : backdropFor(e);
 
-        heroTitle.animate().cancel();
-        heroTitle.animate().alpha(0f).translationX(-dp(8)).setDuration(90).withEndAction(() -> {
-            heroTitle.setText(title);
-            heroSub.setText(sub);
-            if (icon != null) { heroIcon.setImageDrawable(icon); heroIcon.setVisibility(View.VISIBLE); }
-            else heroIcon.setVisibility(View.INVISIBLE);
-            heroTitle.setTranslationX(dp(8));
-            heroTitle.animate().alpha(1f).translationX(0).setDuration(ANIM_MS).start();
-            heroSub.setAlpha(0f);
-            heroSub.animate().alpha(1f).setDuration(ANIM_MS + 60).start();
-            heroIcon.setAlpha(0f);
-            heroIcon.animate().alpha(1f).setDuration(ANIM_MS).start();
+        heroTitle.setText(title);
+        heroSub.setText(sub);
+        heroSub.setVisibility(sub.length() == 0 ? View.GONE : View.VISIBLE);
+        heroTitle.setAlpha(0.4f);
+        heroTitle.animate().alpha(1f).setDuration(ANIM_MS).start();
+
+        backdrop.animate().cancel();
+        backdrop.animate().alpha(0f).setDuration(80).withEndAction(() -> {
+            backdrop.setImageDrawable(art);
+            if (art != null) backdrop.animate().alpha(0.55f).setDuration(260).start();
         }).start();
 
-        animateAccent(target);
+        animateAccent(e == null ? 0xFF2A303C : accentFor(e));
+    }
+
+    /**
+     * Banner rendered into a tiny bitmap and stretched back up: free, GPU-cheap soft blur,
+     * so the billboard looks like out-of-focus key art rather than a pixelated logo.
+     */
+    private Drawable backdropFor(AppEntry e) {
+        if (backdropCache.containsKey(e.pkg)) return backdropCache.get(e.pkg);
+        Drawable src = e.banner != null ? e.banner : null;
+        Drawable out = null;
+        if (src != null) {
+            try {
+                Bitmap small = Bitmap.createBitmap(48, 27, Bitmap.Config.ARGB_8888);
+                Canvas c = new Canvas(small);
+                Drawable d = src.getConstantState() != null ? src.getConstantState().newDrawable().mutate() : src;
+                d.setBounds(0, 0, 48, 27);
+                d.draw(c);
+                Bitmap mid = Bitmap.createScaledBitmap(small, 192, 108, true);
+                small.recycle();
+                BitmapDrawable bd = new BitmapDrawable(getResources(), mid);
+                bd.setFilterBitmap(true);
+                out = bd;
+            } catch (Throwable ignored) { }
+        }
+        backdropCache.put(e.pkg, out);
+        return out;
     }
 
     private void animateAccent(int to) {
         if (accentAnim != null) accentAnim.cancel();
         accentAnim = ValueAnimator.ofObject(new ArgbEvaluator(), accent, to);
-        accentAnim.setDuration(420);
+        accentAnim.setDuration(350);
         accentAnim.setInterpolator(new DecelerateInterpolator());
-        accentAnim.addUpdateListener(a -> {
-            accent = (Integer) a.getAnimatedValue();
-            glow.setAccent(accent);
-        });
+        accentAnim.addUpdateListener(a -> { accent = (Integer) a.getAnimatedValue(); glow.setAccent(accent); });
         accentAnim.start();
     }
 
-    /** Picks a rich colour out of the app icon so each app tints the screen differently. */
     private int accentFor(AppEntry e) {
-        Integer c = accentCache.get(e.pkg);
-        if (c != null) return c;
-        int result = 0xFF3A4458;
+        Integer cached = accentCache.get(e.pkg);
+        if (cached != null) return cached;
+        int result = 0xFF2A303C;
         try {
-            Bitmap b = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888);
+            Bitmap b = Bitmap.createBitmap(24, 24, Bitmap.Config.ARGB_8888);
             Canvas cv = new Canvas(b);
-            Drawable d = e.icon.getConstantState() != null
-                    ? e.icon.getConstantState().newDrawable().mutate() : e.icon;
-            d.setBounds(0, 0, 32, 32);
+            Drawable d = e.icon.getConstantState() != null ? e.icon.getConstantState().newDrawable().mutate() : e.icon;
+            d.setBounds(0, 0, 24, 24);
             d.draw(cv);
             double x = 0, y = 0, wSum = 0;
             float[] hsv = new float[3];
-            for (int i = 0; i < 32; i++) for (int j = 0; j < 32; j++) {
+            for (int i = 0; i < 24; i++) for (int j = 0; j < 24; j++) {
                 int p = b.getPixel(i, j);
                 if (Color.alpha(p) < 160) continue;
                 Color.colorToHSV(p, hsv);
@@ -451,10 +448,10 @@ public class MainActivity extends Activity {
                 x += Math.cos(rad) * w; y += Math.sin(rad) * w; wSum += w;
             }
             b.recycle();
-            if (wSum > 1.5) {
+            if (wSum > 1.0) {
                 float hue = (float) Math.toDegrees(Math.atan2(y, x));
                 if (hue < 0) hue += 360f;
-                result = Color.HSVToColor(new float[]{hue, 0.85f, 0.72f});
+                result = Color.HSVToColor(new float[]{hue, 0.8f, 0.5f});
             }
         } catch (Throwable ignored) { }
         accentCache.put(e.pkg, result);
@@ -465,67 +462,50 @@ public class MainActivity extends Activity {
         return Color.rgb((int) (Color.red(c) * f), (int) (Color.green(c) * f), (int) (Color.blue(c) * f));
     }
 
-    // ---------------------------------------------------------------- helpers
-
-    private String greetingText() {
-        int h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
-        if (h < 5) return "Good night";
-        if (h < 12) return "Good morning";
-        if (h < 18) return "Good afternoon";
-        return "Good evening";
-    }
-
-    private TextView text(float sp, int color, boolean bold) {
+    private TextView text(float sp, int color) {
         TextView t = new TextView(this);
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
         t.setTextColor(color);
-        if (bold) t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         t.setIncludeFontPadding(false);
         return t;
     }
 
-    private int dp(float v) {
-        return Math.round(v * getResources().getDisplayMetrics().density);
-    }
+    private int dp(float v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 
-    /** Dark background with a soft coloured glow in the top-right, darkened on the left and bottom. */
+    // ------------------------------------------------------------ background layers
+
+    /** Soft coloured light from the top-right, tinted by the focused app. */
     static final class GlowView extends View {
-        private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint glow2Paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint leftPaint = new Paint();
-        private final Paint bottomPaint = new Paint();
-        private int accent = 0xFF7A1420;
-
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private int accent;
         GlowView(Context c) { super(c); }
-
         void setAccent(int a) { accent = a; rebuild(); invalidate(); }
-
-        @Override
-        protected void onSizeChanged(int w, int h, int ow, int oh) { rebuild(); }
-
+        @Override protected void onSizeChanged(int w, int h, int ow, int oh) { rebuild(); }
         private void rebuild() {
             int w = getWidth(), h = getHeight();
-            if (w == 0 || h == 0) return;
+            if (w == 0) return;
             int a = accent & 0x00FFFFFF;
-            glowPaint.setShader(new RadialGradient(w * 0.82f, h * 0.12f, w * 0.72f,
-                    new int[]{0x99000000 | a, 0x33000000 | a, 0x00000000 | a},
-                    new float[]{0f, 0.5f, 1f}, Shader.TileMode.CLAMP));
-            glow2Paint.setShader(new RadialGradient(w * 0.98f, h * 0.85f, w * 0.40f,
-                    new int[]{0x40000000 | a, 0x00000000 | a}, null, Shader.TileMode.CLAMP));
-            leftPaint.setShader(new LinearGradient(0, 0, w * 0.62f, 0,
-                    0xD907070A, 0x0007070A, Shader.TileMode.CLAMP));
-            bottomPaint.setShader(new LinearGradient(0, h * 0.45f, 0, h,
-                    0x0007070A, 0xF207070A, Shader.TileMode.CLAMP));
+            p.setShader(new RadialGradient(w * 0.85f, h * 0.05f, w * 0.75f,
+                    new int[]{0xB0000000 | a, 0x40000000 | a, a},
+                    new float[]{0f, 0.45f, 1f}, Shader.TileMode.CLAMP));
         }
+        @Override protected void onDraw(Canvas c) { c.drawRect(0, 0, getWidth(), getHeight(), p); }
+    }
 
-        @Override
-        protected void onDraw(Canvas c) {
-            c.drawColor(BG);
-            int w = getWidth(), h = getHeight();
-            c.drawRect(0, 0, w, h, glowPaint);
-            c.drawRect(0, 0, w, h, glow2Paint);
-            c.drawRect(0, 0, w, h, leftPaint);
-            c.drawRect(0, 0, w, h, bottomPaint);
+    /** Netflix-style fade: solid on the left, clear on the right; plus a fade into the tile row. */
+    static final class ShadeView extends View {
+        private final Paint left = new Paint(), bottom = new Paint();
+        ShadeView(Context c) { super(c); }
+        @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
+            left.setShader(new LinearGradient(0, 0, w * 0.7f, 0,
+                    new int[]{BG, 0xCC000000 | (BG & 0xFFFFFF), BG & 0xFFFFFF},
+                    new float[]{0.25f, 0.55f, 1f}, Shader.TileMode.CLAMP));
+            bottom.setShader(new LinearGradient(0, h * 0.42f, 0, h * 0.78f,
+                    BG & 0xFFFFFF, BG, Shader.TileMode.CLAMP));
+        }
+        @Override protected void onDraw(Canvas c) {
+            c.drawRect(0, 0, getWidth(), getHeight(), left);
+            c.drawRect(0, 0, getWidth(), getHeight(), bottom);
         }
     }
 }
