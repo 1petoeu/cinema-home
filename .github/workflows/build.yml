@@ -2,6 +2,8 @@ name: Build APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,7 +18,11 @@ jobs:
           gradle-version: '8.9'
       - name: Build
         run: gradle :app:assembleRelease --no-daemon --stacktrace
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cinema-home
-          path: app/build/outputs/apk/release/*.apk
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk cinema-home.apk
+          gh release create "v1.0.${{ github.run_number }}" cinema-home.apk \
+            --title "Cinema Home 1.0.${{ github.run_number }}" \
+            --notes "Install with INSTALL.bat" --latest
